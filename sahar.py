@@ -46,6 +46,9 @@
 """
 
 import asyncio
+from flask import flask
+import threading
+import os
 import json
 import logging
 import random
@@ -55,7 +58,22 @@ from pathlib import Path
 from telegram import Update
 from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes
+from flask import Flask
+import threading
+import os
 
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Sahar Bot is Running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port)
+
+def start_web_server():
+    threading.Thread(target=run_web, daemon=True).start()
 # ======================= تنظیمات اولیه =======================
 TOKEN = "8602669633:AAFaCBzjMOYfTeTHdBOanuGO55AUtYu5nBQ"
 
@@ -782,6 +800,7 @@ def build_application():
 
 
 def main():
+    start_web_server()
     if TOKEN == "TOKEN_HERE":
         raise SystemExit("اول TOKEN را در بالای فایل بگذار.")
 
