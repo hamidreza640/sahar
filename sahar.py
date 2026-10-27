@@ -46,7 +46,7 @@
 """
 
 import asyncio
-from flask import flask
+from flask import Flask
 import threading
 import os
 import json
