@@ -34,6 +34,9 @@
     /settext <n>        با ریپلای روی یک پیام، همان متن جایگزین می‌شود
     /addtext <متن>      افزودن متن جدید (یا با ریپلای)
     /deltext <n>        حذف متن شماره n
+    /voices             لیست ویس‌های تبلیغاتی
+    /addvoice           افزودن ویس (ویس را با کپشن /addvoice بفرست یا ریپلای کن)
+    /delvoice <n>       حذف ویس شماره n
     /starttexts         لیست متن‌های خوش‌آمد
     /setstart <n> <متن> ویرایش متن خوش‌آمد شماره n (یا با ریپلای)
     /addstart <متن>     افزودن متن خوش‌آمد
@@ -121,14 +124,30 @@ DEFAULTS = {
     "groups": [int(g) for g in GROUP_IDS],
     "texts": list(TEXTS),
     "start_texts": list(START_TEXTS),
+    "voices": [],
 }
 
 STATE = {}
-_last_text_by_chat = {}
+_last_payload_by_chat = {}
 _next_run = 0.0
 
 
 # ======================= ذخیره‌سازی =======================
+
+
+def _normalize_voices(items):
+    """ویس‌ها به شکل {"id": file_id, "dur": ثانیه} ذخیره می‌شوند."""
+    result = []
+    for item in items or []:
+        if isinstance(item, str) and item:
+            result.append({"id": item, "dur": 0})
+        elif isinstance(item, dict) and item.get("id"):
+            try:
+                dur = int(item.get("dur") or 0)
+            except (TypeError, ValueError):
+                dur = 0
+            result.append({"id": str(item["id"]), "dur": dur})
+    return result
 
 
 def save_state():
@@ -158,6 +177,7 @@ def load_state():
             STATE = {**DEFAULTS, **saved}
             STATE["groups"] = [int(g) for g in STATE["groups"]]
             STATE["interval"] = min(MAX_INTERVAL, max(MIN_INTERVAL, int(STATE["interval"])))
+            STATE["voices"] = _normalize_voices(STATE.get("voices", []))
 
             # سازگاری با نسخهٔ قدیمی که فقط یک owner_id داشت
             migrated = False
@@ -183,6 +203,7 @@ def load_state():
         "groups": list(DEFAULTS["groups"]),
         "texts": list(DEFAULTS["texts"]),
         "start_texts": list(DEFAULTS["start_texts"]),
+        "voices": list(DEFAULTS["voices"]),
     }
     save_state()
 
@@ -190,18 +211,25 @@ def load_state():
 # ======================= ارسال =======================
 
 
-def pick_text_for(chat_id):
+def pick_payload_for(chat_id):
+    """به‌صورت تصادفی یک متن یا یک ویس انتخاب می‌کند (بدون تکرار پشت‌سرهم)."""
     texts = STATE["texts"]
-    if not texts:
-        return None
-    if len(texts) == 1:
-        return texts[0]
+    voices = STATE.get("voices", [])
 
-    last = _last_text_by_chat.get(chat_id, -1)
-    choices = [i for i in range(len(texts)) if i != last]
-    index = random.choice(choices)
-    _last_text_by_chat[chat_id] = index
-    return texts[index]
+    pool = [("text", i) for i in range(len(texts))]
+    pool += [("voice", i) for i in range(len(voices))]
+    if not pool:
+        return ("text", "")
+
+    last = _last_payload_by_chat.get(chat_id)
+    choices = [item for item in pool if item != last] or pool
+    pick = random.choice(choices)
+    _last_payload_by_chat[chat_id] = pick
+
+    kind, index = pick
+    if kind == "voice":
+        return ("voice", voices[index]["id"])
+    return ("text", texts[index])
 
 
 async def send_round(app):
@@ -209,17 +237,20 @@ async def send_round(app):
     if not groups:
         log.warning("هیچ گروهی تنظیم نشده.")
         return 0, 0
-    if not STATE["texts"]:
-        log.warning("هیچ متنی برای ارسال وجود ندارد.")
+    if not STATE["texts"] and not STATE.get("voices"):
+        log.warning("هیچ متن یا ویسی برای ارسال وجود ندارد.")
         return 0, 0
 
     sent = 0
     failed = 0
 
     for chat_id in list(groups):
-        text = pick_text_for(chat_id)
         try:
-            await app.bot.send_message(chat_id=chat_id, text=text)
+            kind, payload = pick_payload_for(chat_id)
+            if kind == "voice":
+                await app.bot.send_voice(chat_id=chat_id, voice=payload)
+            else:
+                await app.bot.send_message(chat_id=chat_id, text=payload)
             sent += 1
         except RetryAfter as err:
             failed += 1
@@ -331,6 +362,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚙️ وضعیت فعلی:\n"
             f"• گروه‌ها: {len(STATE['groups'])}\n"
             f"• متن‌ها: {len(STATE['texts'])}\n"
+            f"• ویس‌ها: {len(STATE.get('voices', []))}\n"
             f"• متن‌های خوش‌آمد: {len(STATE['start_texts'])}\n"
             f"• مالک‌ها: {len(STATE['owners'])}\n"
             f"• فاصلهٔ ارسال: هر {STATE['interval']} ثانیه\n\n"
@@ -363,6 +395,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/settext <شماره> (با ریپلای) — ویرایش از روی پیام\n"
         "/addtext <متن> — افزودن\n"
         "/deltext <شماره> — حذف\n\n"
+        "🎤 ویس‌های گروه‌ها\n"
+        "/voices — لیست ویس‌ها\n"
+        "/addvoice — افزودن (ویس را با کپشن /addvoice بفرست یا ریپلای کن)\n"
+        "/delvoice <شماره> — حذف\n\n"
         "👋 متن خوش‌آمد\n"
         "/starttexts — لیست\n"
         "/setstart <شماره> <متن> — ویرایش\n"
@@ -760,6 +796,73 @@ async def cmd_delstart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(f"🗑 حذف شد: {removed[:40]}")
 
 
+
+async def cmd_voices(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return await deny(update)
+
+    voices = STATE.get("voices", [])
+    if not voices:
+        return await update.effective_message.reply_text(
+            "هیچ ویسی ثبت نشده.\n"
+            "ویس را با کپشن /addvoice بفرست، یا روی ویس ریپلای کن و /addvoice بزن."
+        )
+
+    lines = []
+    for i, item in enumerate(voices, start=1):
+        dur = item.get("dur") or 0
+        lines.append(f"{i}. ویس" + (f" — {dur} ثانیه" if dur else ""))
+    await update.effective_message.reply_text("🎤 ویس‌های تبلیغاتی:\n" + "\n".join(lines))
+
+
+async def cmd_addvoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return await deny(update)
+
+    message = update.effective_message
+    voice = getattr(message, "voice", None)
+
+    if voice is None and message.reply_to_message is not None:
+        voice = getattr(message.reply_to_message, "voice", None)
+
+    if voice is None:
+        return await message.reply_text(
+            "ویس را با کپشن /addvoice بفرست،\n"
+            "یا روی یک پیام ویس ریپلای کن و /addvoice بزن."
+        )
+
+    voices = STATE.setdefault("voices", [])
+    if any(item["id"] == voice.file_id for item in voices):
+        return await message.reply_text("این ویس از قبل ثبت شده بود.")
+
+    voices.append({"id": voice.file_id, "dur": int(getattr(voice, "duration", 0) or 0)})
+    save_state()
+    await message.reply_text(f"✅ ویس اضافه شد. تعداد ویس‌ها: {len(voices)}")
+
+
+async def cmd_delvoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return await deny(update)
+
+    if not context.args:
+        return await update.effective_message.reply_text("مثال: /delvoice 2")
+
+    try:
+        index = int(context.args[0]) - 1
+    except ValueError:
+        return await update.effective_message.reply_text("شماره نامعتبر است.")
+
+    voices = STATE.get("voices", [])
+    if not 0 <= index < len(voices):
+        return await update.effective_message.reply_text(
+            f"شماره باید بین ۱ و {len(voices)} باشد."
+        )
+
+    voices.pop(index)
+    save_state()
+    await update.effective_message.reply_text(f"🗑 ویس {index + 1} حذف شد.")
+
+
 async def cmd_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update):
         return await deny(update)
@@ -824,6 +927,9 @@ def main():
         ("edittext", cmd_settext),
         ("addtext", cmd_addtext),
         ("deltext", cmd_deltext),
+        ("voices", cmd_voices),
+        ("addvoice", cmd_addvoice),
+        ("delvoice", cmd_delvoice),
         ("starttexts", cmd_starttexts),
         ("setstart", cmd_setstart),
         ("editstart", cmd_setstart),
@@ -838,3 +944,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
